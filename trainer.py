@@ -1,16 +1,32 @@
 import os
 from datetime import datetime
+from typing import Any
+
 import numpy as np
 import json
 import torch
 from torch import nn
 from torch.utils import data
+from torch.utils._pytree import tree_map
+from torch.utils.data.dataloader import default_collate
 
-from .bench_manager import TypedTimer
+from .bench import TypedTimer
+
+
+def recursive_collate(batch: list[tuple[Any, Any]], collate=default_collate):
+
+    model_data = collate([x[0] for x in batch])
+    loss_data = collate([x[1] for x in batch])
+    return model_data, loss_data
+
+
+def split_collate(batch: list[tuple[tuple[Any], tuple[Any]]], collate=default_collate):
+    model_data = [collate(x[0]) for x in batch]
+    loss_data = [collate(x[1]) for x in batch]
+    return model_data, loss_data
 
 
 class Trainer:
-
     def __init__(
             self,
 
@@ -42,9 +58,11 @@ class Trainer:
             model_name=None,
 
             model_outputs_adaptor=lambda x: x,
-            model_train_step=lambda model, data: model(data[0]),
+            model_train_step=lambda model, data: model(*data),
 
             record_per_epoch_training_loss=False,
+
+            loss=None,
     ):
         self.model = model
         self.train_dataloader = train_dataloader
@@ -63,7 +81,7 @@ class Trainer:
         self.model_train_step = model_train_step
         self.record_per_epoch_training_loss = record_per_epoch_training_loss
 
-        self.loss = {"train": [], "val": []}
+        self.loss = loss or {"train": [], "val": [], "epoch.train":[]}
         self.model.to(self.device)
 
         self.timer = TypedTimer(self.model_name)
@@ -85,7 +103,7 @@ class Trainer:
             if self.checkpoint_frequency and epoch % self.checkpoint_frequency == 0:
                 self._save_checkpoint(epoch)
 
-        if self.checkpoint_frequency and self.epochs % self.checkpoint_frequency != 0:
+        if not self.checkpoint_frequency or self.epochs % self.checkpoint_frequency != 0:
             self._save_checkpoint(self.epochs)
 
         self.timer.end("train")
@@ -101,29 +119,29 @@ class Trainer:
         for batch_data in self.train_dataloader:
             self.timer.end("train_dataloader")
             self.timer.start("batch")
-            batch_data = [data.to(self.device) for data in batch_data]
-            labels = batch_data[-1].to(self.device)
+            batch_data = tree_map(lambda x: x.to(self.device) if torch.is_tensor(x) else x, batch_data)
+            labels = batch_data[1]
             self.optimizer.zero_grad()
-            predictions = self.model_train_step(self.model, batch_data)
+            predictions = self.model_train_step(self.model, batch_data[0])
             loss = self.criterion(predictions, labels)
             loss.backward()
             self.optimizer.step()
             running_loss.append(loss.item())
             self.timer.end("batch")
 
-            if self.dataset_fraction and i > self.dataset_fraction: break
-
             if self.dataset_fraction and self.timer.drag("_train_step", 1):
                 self._validate_step()
-                self._log_step(epoch, running_loss[-1], tts=self.timer.since("train"))
+                self._log_step(epoch - 1 + i / self.dataset_fraction, running_loss[-1], tts=self.timer.since("train"))
                 self.model.train()
+
+            if self.dataset_fraction and i > self.dataset_fraction: break
 
             self.timer.start("train_dataloader")
             i += 1
 
         epoch_loss = np.mean(running_loss)
         if self.record_per_epoch_training_loss:
-            self.loss["epoch.train"] = self.loss.get("epoch.train", []) + [running_loss]
+            self.loss["epoch.train"].append(running_loss)
         self.loss["train"].append(epoch_loss)
         self.timer.end("_train_step")
 
@@ -152,7 +170,7 @@ class Trainer:
         messages = []
 
         if epoch is not None:
-            messages.append(f"Epoch: {epoch:2d}/{self.epochs:2d}")
+            messages.append(f"Epoch: {int(epoch):2d}/{self.epochs:2d}")
 
         if train_loss is None:
             if len(self.loss["train"]) > 0: train_loss = self.loss["train"][-1]
