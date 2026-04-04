@@ -14,7 +14,6 @@ from .bench import TypedTimer
 
 
 def recursive_collate(batch: list[tuple[Any, Any]], collate=default_collate):
-
     model_data = collate([x[0] for x in batch])
     loss_data = collate([x[1] for x in batch])
     return model_data, loss_data
@@ -38,6 +37,7 @@ class Trainer:
 
             # The loss function and optimizer to be used for training
             criterion=nn.CrossEntropyLoss(ignore_index=0),
+            regularization=None,
             optimizer=torch.optim.Adam,
 
             # How many times the dataset is trained through
@@ -61,12 +61,14 @@ class Trainer:
             model_train_step=lambda model, data: model(*data),
 
             record_per_epoch_training_loss=False,
+            record_per_batch_training_loss=False,
 
             loss=None,
     ):
         self.model = model
         self.train_dataloader = train_dataloader
         self.criterion = criterion
+        self.regularization = regularization
         self.optimizer = optimizer(model.parameters())
         self.epochs = epochs
         self.dataset_fraction = dataset_fraction
@@ -80,11 +82,20 @@ class Trainer:
         self.model_outputs_adaptor = model_outputs_adaptor
         self.model_train_step = model_train_step
         self.record_per_epoch_training_loss = record_per_epoch_training_loss
+        self.record_per_batch_training_loss = record_per_batch_training_loss
 
-        self.loss = loss or {"train": [], "val": [], "epoch.train":[]}
+        self.loss = loss or {"train": [], "val": [], "epoch.train": [], "batch.train": []}
         self.model.to(self.device)
 
         self.timer = TypedTimer(self.model_name)
+
+        try:
+            # self.dataset_length = len(train_dataloader.dataset) // train_dataloader.batch_size
+            self.dataset_length = len(train_dataloader)
+            if dataset_fraction is not None:
+                self.dataset_length = min(self.dataset_length, dataset_fraction)
+        except:
+            self.dataset_length = None
 
     def to(self, device):
         self.device = device
@@ -120,19 +131,24 @@ class Trainer:
             self.timer.end("train_dataloader")
             self.timer.start("batch")
             batch_data = tree_map(lambda x: x.to(self.device) if torch.is_tensor(x) else x, batch_data)
-            labels = batch_data[1]
             self.optimizer.zero_grad()
             predictions = self.model_train_step(self.model, batch_data[0])
-            loss = self.criterion(predictions, labels)
+            loss = self.criterion(predictions, batch_data[1])
+            running_loss.append(loss.item())
+            if self.regularization: loss += self.regularization(predictions)
             loss.backward()
             self.optimizer.step()
-            running_loss.append(loss.item())
+            if self.record_per_batch_training_loss: self.loss["batch.train"].append(running_loss[-1])
             self.timer.end("batch")
 
-            if self.dataset_fraction and self.timer.drag("_train_step", 1):
-                self._validate_step()
-                self._log_step(epoch - 1 + i / self.dataset_fraction, running_loss[-1], tts=self.timer.since("train"))
-                self.model.train()
+            # if self.dataset_fraction and self.timer.drag("_train_step", 1):
+            #     self._validate_step()
+            #     self._log_step(epoch - 1 + i / self.dataset_fraction, running_loss[-1], tts=self.timer.since("train"))
+            #     self.model.train()
+
+            if self.timer.drag("_train_step", 1):
+                if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
+                else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
 
             if self.dataset_fraction and i > self.dataset_fraction: break
 
@@ -140,8 +156,8 @@ class Trainer:
             i += 1
 
         epoch_loss = np.mean(running_loss)
-        if self.record_per_epoch_training_loss:
-            self.loss["epoch.train"].append(running_loss)
+        # Redundant, because "train" is doing the same thing
+        if self.record_per_epoch_training_loss: self.loss["epoch.train"].append(epoch_loss)
         self.loss["train"].append(epoch_loss)
         self.timer.end("_train_step")
 
@@ -153,12 +169,13 @@ class Trainer:
         running_loss = []
 
         with torch.no_grad():
-            for i, batch_data in enumerate(self.val_dataloader, 1):
+            self.timer.start("val_dataloader")
+            for batch_data in self.val_dataloader:
+                self.timer.end("val_dataloader")
                 self.timer.start("val_batch")
-                inputs = batch_data[0].to(self.device)
-                labels = batch_data[1].to(self.device)
-                outputs = self.model(inputs)
-                loss = self.criterion(outputs, labels)
+                batch_data = tree_map(lambda x: x.to(self.device) if torch.is_tensor(x) else x, batch_data)
+                predictions = self.model_train_step(self.model, batch_data[0])
+                loss = self.criterion(predictions, batch_data[1])
                 running_loss.append(loss.item())
                 self.timer.end("val_batch")
 
@@ -192,17 +209,47 @@ class Trainer:
 
         print("    ".join(messages))
 
-    def _save_checkpoint(self, epoch):
+    def _save_checkpoint(self, epoch, running_loss=None):
+        if isinstance(epoch, int): epoch = f"{epoch:03d}"
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_path = f"checkpoint_{self.model_name}_{epoch:03d}_{date_str}.pt"
+        loss = running_loss or (self.loss["train"][-1] if len(self.loss["train"]) > 0 else None)
+        model_path = f"checkpoint_{self.model_name}_{epoch}_{date_str}_{loss}.pt"
         model_path = os.path.join(self.model_dir, model_path)
-        torch.save(self.model, model_path)
+        torch.save(self.model.state_dict(), model_path)
 
-    def save_model(self):
-        model_path = os.path.join(self.model_dir, f"model_{self.model_name}.pt")
-        torch.save(self.model, model_path)
+    def save_model(self, name=None):
+        if name is None: name = self.model_name
+        model_path = os.path.join(self.model_dir, f"model_{name}.pt")
+        torch.save(self.model.state_dict(), model_path)
+
+    def load_model(self, name=None):
+        if name is None: name = f"model_{self.model_name}.pt"
+        model_path = os.path.join(self.model_dir, name)
+        self.model.load_state_dict(torch.load(model_path, weights_only=True))
 
     def save_loss(self):
         loss_path = os.path.join(self.model_dir, f"loss_{self.model_name}.json")
         with open(loss_path, "w") as fp:
             json.dump(self.loss, fp)
+
+    def load_checkpoint(self, name=None):
+        self._save_checkpoint("load_backup")
+        if name is not None:
+            self.load_model(name)
+            return
+        available_choices = [(x, os.path.join(self.model_dir, x)) for x in os.listdir(self.model_dir) if x.startswith("checkpoint_") and x.endswith(".pt")]
+        if len(available_choices) == 0:
+            print("No checkpoints found")
+            return
+        available_choices.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
+        print("Pick an option")
+        if len(available_choices) > 3: print("  0> View All")
+        if len(available_choices) > 0: print("  1> 1st Last Model", available_choices[0][0])
+        if len(available_choices) > 1: print("  2> 2st Last Model", available_choices[1][0])
+        if len(available_choices) > 2: print("  3> 3st Last Model", available_choices[2][0])
+        choice = int(input("Choice: "))
+        if choice == 0:
+            for i, (name, _) in enumerate(available_choices, 1):
+                print(f"{i:03d} {name}")
+            choice = int(input("Choice: "))
+        self.load_model(available_choices[choice - 1][0])
