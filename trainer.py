@@ -101,6 +101,10 @@ class Trainer:
         self.device = device
         self.model.to(device)
 
+    def learning_rate(self, lr):
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
     def train(self):
         self.timer.start("train")
 
@@ -135,22 +139,28 @@ class Trainer:
             predictions = self.model_train_step(self.model, batch_data[0])
             loss = self.criterion(predictions, batch_data[1])
             running_loss.append(loss.item())
-            if self.regularization: loss += self.regularization(predictions)
+            regularization = None
+            if self.regularization:
+                regularization = self.regularization(predictions)
+                loss += regularization
+                regularization = regularization.item()
             loss.backward()
             self.optimizer.step()
             if self.record_per_batch_training_loss: self.loss["batch.train"].append(running_loss[-1])
             self.timer.end("batch")
 
-            # if self.dataset_fraction and self.timer.drag("_train_step", 1):
+            if self.dataset_fraction and i > self.dataset_fraction: break
+
+            # if self.dataset_fraction and self.timer.drag("_train_step", 60):
             #     self._validate_step()
             #     self._log_step(epoch - 1 + i / self.dataset_fraction, running_loss[-1], tts=self.timer.since("train"))
             #     self.model.train()
 
             if self.timer.drag("_train_step", 1):
-                if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
-                else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
-
-            if self.dataset_fraction and i > self.dataset_fraction: break
+                epoch_data = epoch - 1 if self.dataset_length is None else epoch - 1 + i / self.dataset_length
+                # if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
+                # else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
+                self._log_step(epoch_data, running_loss[-1], tts=self.timer.since("train"), dataset_fraction=i, regularization=regularization)
 
             self.timer.start("train_dataloader")
             i += 1
@@ -183,8 +193,11 @@ class Trainer:
         self.loss["val"].append(epoch_loss)
         self.timer.end("_validate_step")
 
-    def _log_step(self, epoch=None, train_loss=None, val_loss=None, tts=None):
+    def _log_step(self, epoch=None, train_loss=None, val_loss=None, tts=None, dataset_fraction=None, regularization=None):
         messages = []
+
+        if dataset_fraction is not None and self.dataset_fraction is not None:
+            messages.append(f"Fraction: {dataset_fraction:2d}/{self.dataset_fraction:2d}")
 
         if epoch is not None:
             messages.append(f"Epoch: {int(epoch):2d}/{self.epochs:2d}")
@@ -194,6 +207,9 @@ class Trainer:
 
         if train_loss is not None:
             messages.append(f"Train Loss: {train_loss:.2f}")
+
+        if regularization is not None:
+            messages.append(f"Regularization: {regularization:.2f}")
 
         if val_loss is None:
             if len(self.loss["val"]) > 0: val_loss = self.loss["val"][-1]
@@ -227,13 +243,14 @@ class Trainer:
         model_path = os.path.join(self.model_dir, name)
         self.model.load_state_dict(torch.load(model_path, weights_only=True))
 
-    def save_loss(self):
+    def save_loss(self, name=None):
+        if name is None: name = self.model_name
         loss_path = os.path.join(self.model_dir, f"loss_{self.model_name}.json")
         with open(loss_path, "w") as fp:
             json.dump(self.loss, fp)
 
-    def load_checkpoint(self, name=None):
-        self._save_checkpoint("load_backup")
+    def load_checkpoint(self, name=None, save_backup=True):
+        if save_backup: self._save_checkpoint("load_backup")
         if name is not None:
             self.load_model(name)
             return
