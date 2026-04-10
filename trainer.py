@@ -25,6 +25,23 @@ def split_collate(batch: list[tuple[tuple[Any], tuple[Any]]], collate=default_co
     return model_data, loss_data
 
 
+def _ada_pad(item: np.ndarray, length):
+    pad_map = [(0, length - len(item))]
+    if item.ndim > 1: pad_map.extend([(0, 0)] * (item.ndim - 1))
+    return np.pad(item, pad_map)
+
+
+def sequence_collate(batch: list[tuple[tuple[Any], tuple[Any]]], collate=default_collate):
+    model_data, loss_data = zip(*batch)
+    max_len = max(len(sample[0]) for sample in model_data)
+    mask = collate(np.asarray([[i < len(sample[0]) for i in range(max_len)] for sample in model_data]))
+    model_data = tuple(zip(*(tuple(_ada_pad(data, max_len) for data in sample) for sample in model_data)))
+    model_data = tuple(collate(np.stack(data)) for data in model_data)
+    loss_data = tuple(zip(*(tuple(data for data in sample) for sample in loss_data)))
+    loss_data = tuple(collate(np.stack(data)) for data in loss_data)
+    return (*model_data, mask), loss_data
+
+
 class Trainer:
     def __init__(
             self,
