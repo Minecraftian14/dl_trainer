@@ -262,7 +262,7 @@ class Trainer:
 
     def save_loss(self, name=None):
         if name is None: name = self.model_name
-        loss_path = os.path.join(self.model_dir, f"loss_{self.model_name}.json")
+        loss_path = os.path.join(self.model_dir, f"loss_{name}.json")
         with open(loss_path, "w") as fp:
             json.dump(self.loss, fp)
 
