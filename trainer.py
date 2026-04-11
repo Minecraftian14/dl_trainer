@@ -174,6 +174,7 @@ class Trainer:
             #     self.model.train()
 
             if self.timer.drag("_train_step", 1):
+                # epoch_data = epoch - 1 if self.dataset_fraction is None else epoch - 1 + i / self.dataset_fraction
                 epoch_data = epoch - 1 if self.dataset_length is None else epoch - 1 + i / self.dataset_length
                 # if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
                 # else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
