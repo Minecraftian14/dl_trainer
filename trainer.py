@@ -69,6 +69,16 @@ def create_sequence_collator(collation_map, collate=default_collate):
     return sequence_collate
 
 
+def default_model_outputs_adaptor(x): return x
+
+
+def default_model_train_step(model, data): return model(*data)
+
+
+def default_model_criteria_step(criterion, preds, truth):
+    return criterion(preds, truth)
+
+
 class Trainer:
     def __init__(
             self,
@@ -101,8 +111,9 @@ class Trainer:
             model_dir=None,
             model_name=None,
 
-            model_outputs_adaptor=lambda x: x,
-            model_train_step=lambda model, data: model(*data),
+            model_outputs_adaptor=default_model_outputs_adaptor,
+            model_train_step=default_model_train_step,
+            model_criteria_step=default_model_criteria_step,
 
             record_per_epoch_training_loss=False,
             record_per_batch_training_loss=False,
@@ -125,10 +136,11 @@ class Trainer:
         self.model_name = model_name if model_name else model.__class__.__name__
         self.model_outputs_adaptor = model_outputs_adaptor
         self.model_train_step = model_train_step
+        self.model_criteria_step = model_criteria_step
         self.record_per_epoch_training_loss = record_per_epoch_training_loss
         self.record_per_batch_training_loss = record_per_batch_training_loss
 
-        self.loss = loss or {"train": [], "val": [], "epoch.train": [], "batch.train": []}
+        self.loss = loss or {}
         self.model.to(self.device)
 
         self.timer = TypedTimer(self.model_name)
@@ -149,13 +161,26 @@ class Trainer:
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
 
+    def record_loss(self, name, item):
+        if name not in self.loss: self.loss[name] = []
+        self.loss[name].append(item)
+
+    def has_loss(self, name):
+        return name in self.loss and len(self.loss[name]) > 0
+
+    def get_loss(self, name):
+        return self.loss[name]
+
+    def change_device(self, x):
+        return x.to(self.device) if torch.is_tensor(x) else x
+
     def train(self):
         self.timer.start("train")
 
         for epoch in range(1, 1 + self.epochs):
             self._train_step(epoch)
             self._validate_step()
-            self._log_step(epoch, train_loss=self.loss["train"][-1], val_loss=self.loss["val"][-1] if len(self.loss["val"]) > 0 else None, tts=self.timer.since("train"))
+            self._log_step(epoch, train_loss=self.get_loss('train')[-1], val_loss=self.get_loss('val')[-1] if self.has_loss('val') else None, tts=self.timer.since("train"))
 
             if self.lr_scheduler: self.lr_scheduler.step()
 
@@ -178,27 +203,37 @@ class Trainer:
         for batch_data in self.train_dataloader:
             self.timer.end("train_dataloader")
             self.timer.start("batch")
-            batch_data = tree_map(lambda x: x.to(self.device) if torch.is_tensor(x) else x, batch_data)
+            batch_data = tree_map(self.change_device, batch_data)
             self.optimizer.zero_grad()
             predictions = self.model_train_step(self.model, batch_data[0])
-            loss = self.criterion(predictions, batch_data[1])
-            running_loss.append(loss.item())
+            loss = self.model_criteria_step(self.criterion, predictions, batch_data[1])
             regularization = None
-            if self.regularization:
+            if self.regularization is not None:
                 regularization = self.regularization(predictions)
                 loss += regularization
-                regularization = regularization.item()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.alpha.parameters(), max_norm=1.0)
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    print(f"{name}: {param.grad.norm():.2e}")
-                else: print(f"{name}: None")
+
+            # TODO: Add scope for adding callbacks around everything to do things like gradient clipping
+            # torch.nn.utils.clip_grad_norm_(self.model.alpha.parameters(), max_norm=1.0)
+
+            # TODO: Add support to introduce various debugging utilities, maybe as predefined callbacks
+            # for name, param in self.model.named_parameters():
+            #     if param.grad is not None:
+            #         print(f"{name}: {param.grad.norm():.2e}")
+            #     else: print(f"{name}: None")
+
             self.optimizer.step()
+
+            if regularization is not None: regularization = regularization.item()
+            running_loss.append(loss.item())
+
             # Grab one parameter to monitor
             # param = list(self.model.history_model.parameters())[0]
             # print(f"Epoch {epoch} | Loss: {loss.item():.4f} | Weight sample: {param.data[0][0]:.6f}")
-            # if self.record_per_batch_training_loss: self.loss["batch.train"].append(running_loss[-1])
+
+            if self.record_per_batch_training_loss:
+                self.record_loss('train.batch', running_loss[-1])
+
             self.timer.end("batch")
 
             if self.dataset_fraction and i > self.dataset_fraction: break
@@ -218,10 +253,8 @@ class Trainer:
             self.timer.start("train_dataloader")
             i += 1
 
-        epoch_loss = np.mean(running_loss)
-        # Redundant, because "train" is doing the same thing
-        if self.record_per_epoch_training_loss: self.loss["epoch.train"].append(epoch_loss)
-        self.loss["train"].append(epoch_loss)
+        epoch_loss = np.mean(running_loss)  # TODO: Wait what!? Mean!? Is that good!?
+        self.record_loss('train', epoch_loss)
         self.timer.end("_train_step")
 
     def _validate_step(self):
@@ -243,7 +276,7 @@ class Trainer:
                 self.timer.end("val_batch")
 
         epoch_loss = np.mean(running_loss)
-        self.loss["val"].append(epoch_loss)
+        self.record_loss('val', epoch_loss)
         self.timer.end("_validate_step")
 
     def _log_step(self, epoch=None, train_loss=None, val_loss=None, tts=None, dataset_fraction=None, regularization=None):
@@ -256,7 +289,7 @@ class Trainer:
             messages.append(f"Epoch: {int(epoch):2d}/{self.epochs:2d}")
 
         if train_loss is None:
-            if len(self.loss["train"]) > 0: train_loss = self.loss["train"][-1]
+            if self.has_loss('train'): train_loss = self.get_loss('train')[-1]
 
         if train_loss is not None:
             messages.append(f"Train Loss: {train_loss:.2f}")
@@ -265,7 +298,7 @@ class Trainer:
             messages.append(f"Regularization: {regularization:.2f}")
 
         if val_loss is None:
-            if len(self.loss["val"]) > 0: val_loss = self.loss["val"][-1]
+            if self.has_loss('val'): val_loss = self.get_loss('val')[-1]
 
         if val_loss is not None:
             messages.append(f"Val Loss: {val_loss:.2f}")
@@ -281,7 +314,7 @@ class Trainer:
     def _save_checkpoint(self, epoch, running_loss=None):
         if isinstance(epoch, int): epoch = f"{epoch:03d}"
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        loss = running_loss or (self.loss["train"][-1] if len(self.loss["train"]) > 0 else None)
+        loss = running_loss or (self.get_loss('train')[-1] if self.has_loss('train') else None)
         model_path = f"checkpoint_{self.model_name}_{epoch}_{date_str}_{loss}.pt"
         model_path = os.path.join(self.model_dir, model_path)
         torch.save(self.model.state_dict(), model_path)
