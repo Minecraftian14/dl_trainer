@@ -26,6 +26,7 @@ def split_collate(batch: list[tuple[tuple[Any], tuple[Any]]], collate=default_co
 
 
 def _ada_pad(item: np.ndarray, length):
+    if item.ndim == 0 or len(item) == 1: return item
     pad_map = [(0, length - len(item))]
     if item.ndim > 1: pad_map.extend([(0, 0)] * (item.ndim - 1))
     return np.pad(item, pad_map)
@@ -33,13 +34,39 @@ def _ada_pad(item: np.ndarray, length):
 
 def sequence_collate(batch: list[tuple[tuple[Any], tuple[Any]]], collate=default_collate):
     model_data, loss_data = zip(*batch)
-    max_len = max(len(sample[0]) for sample in model_data)
-    mask = collate(np.asarray([[i < len(sample[0]) for i in range(max_len)] for sample in model_data]))
+    print([x.shape for x in model_data[0]])
+    first_seq_idx = [idx for idx, data in enumerate(model_data[0]) if data.ndim > 0 and len(data) != 1][0]
+    max_len = max(len(sample[first_seq_idx]) for sample in model_data)
+    mask = collate(np.asarray([[i < len(sample[first_seq_idx]) for i in range(max_len)] for sample in model_data]))
     model_data = tuple(zip(*(tuple(_ada_pad(data, max_len) for data in sample) for sample in model_data)))
     model_data = tuple(collate(np.stack(data)) for data in model_data)
+    print([x.shape for x in model_data])
     loss_data = tuple(zip(*(tuple(data for data in sample) for sample in loss_data)))
     loss_data = tuple(collate(np.stack(data)) for data in loss_data)
     return (*model_data, mask), loss_data
+
+
+def create_sequence_collator(collation_map, collate=default_collate):
+    def sequence_collate(batch: list[tuple[tuple[Any], tuple[Any]]]):
+        model_data, loss_data = zip(*batch)
+
+        non_seq_data = [tuple(data for is_seq, data in zip(collation_map, sample) if not is_seq) for sample in model_data]
+        seq_data = [tuple(data for is_seq, data in zip(collation_map, sample) if is_seq) for sample in model_data]
+
+        non_seq_data = tuple(zip(*(tuple(data for data in sample) for sample in non_seq_data)))
+        non_seq_data = tuple(collate(np.stack(data)) for data in non_seq_data)
+
+        max_len = max(len(data) for sample in seq_data for data in sample)
+        mask = collate(np.asarray([[i < len(sample[0]) for i in range(max_len)] for sample in seq_data]))
+        seq_data = tuple(zip(*(tuple(_ada_pad(data, max_len) for data in sample) for sample in seq_data)))
+        seq_data = tuple(collate(np.stack(data)) for data in seq_data)
+
+        loss_data = tuple(zip(*(tuple(data for data in sample) for sample in loss_data)))
+        loss_data = tuple(collate(np.stack(data)) for data in loss_data)
+
+        return (*non_seq_data, *seq_data, mask), loss_data
+
+    return sequence_collate
 
 
 class Trainer:
@@ -162,8 +189,16 @@ class Trainer:
                 loss += regularization
                 regularization = regularization.item()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.alpha.parameters(), max_norm=1.0)
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    print(f"{name}: {param.grad.norm():.2e}")
+                else: print(f"{name}: None")
             self.optimizer.step()
-            if self.record_per_batch_training_loss: self.loss["batch.train"].append(running_loss[-1])
+            # Grab one parameter to monitor
+            # param = list(self.model.history_model.parameters())[0]
+            # print(f"Epoch {epoch} | Loss: {loss.item():.4f} | Weight sample: {param.data[0][0]:.6f}")
+            # if self.record_per_batch_training_loss: self.loss["batch.train"].append(running_loss[-1])
             self.timer.end("batch")
 
             if self.dataset_fraction and i > self.dataset_fraction: break
