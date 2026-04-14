@@ -196,6 +196,12 @@ class Trainer:
         self.timer.start("_train_step")
 
         self.model.train()
+        self.model = self.model.to(self.device)
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
+
         running_loss = []
 
         self.timer.start("train_dataloader")
