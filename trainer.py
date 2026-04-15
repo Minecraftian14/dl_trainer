@@ -155,7 +155,12 @@ class Trainer:
 
     def to(self, device):
         self.device = device
-        self.model.to(device)
+        self.model = self.model.to(device)
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+        return self.model
 
     def learning_rate(self, lr):
         for param_group in self.optimizer.param_groups:
@@ -196,11 +201,7 @@ class Trainer:
         self.timer.start("_train_step")
 
         self.model.train()
-        self.model = self.model.to(self.device)
-        for state in self.optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(self.device)
+        self.to(self.device)
 
         running_loss = []
 
@@ -254,7 +255,8 @@ class Trainer:
                 epoch_data = epoch - 1 if self.dataset_length is None else epoch - 1 + i / self.dataset_length
                 # if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
                 # else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
-                self._log_step(epoch_data, running_loss[-1], tts=self.timer.since("train"), dataset_fraction=i, regularization=regularization)
+                agg_loss = np.mean(running_loss[-100:]) if len(running_loss) > 100 else None
+                self._log_step(epoch_data, train_loss=running_loss[-1], agg_loss=agg_loss, tts=self.timer.since("train"), dataset_fraction=i, regularization=regularization)
 
             self.timer.start("train_dataloader")
             i += 1
@@ -285,7 +287,7 @@ class Trainer:
         self.record_loss('val', epoch_loss)
         self.timer.end("_validate_step")
 
-    def _log_step(self, epoch=None, train_loss=None, val_loss=None, tts=None, dataset_fraction=None, regularization=None):
+    def _log_step(self, epoch=None, train_loss=None, agg_loss=None, val_loss=None, tts=None, dataset_fraction=None, regularization=None):
         messages = []
 
         if dataset_fraction is not None and self.dataset_fraction is not None:
@@ -299,6 +301,9 @@ class Trainer:
 
         if train_loss is not None:
             messages.append(f"Train Loss: {train_loss:.2f}")
+
+        if agg_loss is not None:
+            messages.append(f"Agg. Loss: {agg_loss:.2f}")
 
         if regularization is not None:
             messages.append(f"Regularization: {regularization:.2f}")
@@ -316,6 +321,14 @@ class Trainer:
                 messages.append(f"ETA: {(self.epochs - epoch) * tpe:.2f}")
 
         print("    ".join(messages))
+
+    def plot_loss_collage(self):
+        # TODO: Plot Train and Val loss
+        pass
+
+    def plot_loss(self, specimen='train'):
+
+        pass
 
     def _save_checkpoint(self, epoch, running_loss=None):
         if isinstance(epoch, int): epoch = f"{epoch:03d}"
