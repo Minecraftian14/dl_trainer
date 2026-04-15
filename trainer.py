@@ -1,9 +1,9 @@
+import json
 import os
 from datetime import datetime
 from typing import Any
 
 import numpy as np
-import json
 import torch
 from torch import nn
 from torch.utils import data
@@ -327,7 +327,6 @@ class Trainer:
         pass
 
     def plot_loss(self, specimen='train'):
-
         pass
 
     def _save_checkpoint(self, epoch, running_loss=None):
