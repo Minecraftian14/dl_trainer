@@ -235,7 +235,7 @@ class Trainer:
             if regularization is not None: regularization = regularization.item()
             running_loss.append(loss.item())
 
-            if len(running_loss) > 2 * self.checkpoint_frequency_batch and (i + 1) % self.checkpoint_frequency_batch == 0:
+            if self.checkpoint_frequency_batch is not None and len(running_loss) > 2 * self.checkpoint_frequency_batch and (i + 1) % self.checkpoint_frequency_batch == 0:
                 lt_avg = np.mean(running_loss[:-self.checkpoint_frequency_batch])
                 ltlt_avg = np.mean(running_loss[-2 * self.checkpoint_frequency_batch:-self.checkpoint_frequency_batch])
                 if lt_avg < ltlt_avg:
@@ -323,7 +323,7 @@ class Trainer:
 
         if tts is not None:
             messages.append(f"TTS: {tts:.2f}")
-            if epoch is not None:
+            if epoch is not None and isinstance(epoch, float):
                 tpe = tts / epoch
                 messages.append(f"ETA: {(self.epochs - epoch) * tpe:.2f}")
 
