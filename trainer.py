@@ -235,8 +235,10 @@ class Trainer:
             if regularization is not None: regularization = regularization.item()
             running_loss.append(loss.item())
 
-            if (i + 1) % self.checkpoint_frequency_batch == 0:
-                if np.min(running_loss[:-1]) > running_loss[-1]:
+            if len(running_loss) > 2 * self.checkpoint_frequency_batch and (i + 1) % self.checkpoint_frequency_batch == 0:
+                lt_avg = np.mean(running_loss[:-self.checkpoint_frequency_batch])
+                ltlt_avg = np.mean(running_loss[-2 * self.checkpoint_frequency_batch:-self.checkpoint_frequency_batch])
+                if lt_avg < ltlt_avg:
                     self._save_checkpoint('batch_savepoint_%model_name%.pt')
 
             # Grab one parameter to monitor
