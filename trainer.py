@@ -104,6 +104,7 @@ class Trainer:
 
             # How many steps between each saved checkpoint
             checkpoint_frequency: int = None,
+            checkpoint_frequency_batch: int = None,
 
             lr_scheduler=None,
             device='cpu',
@@ -129,6 +130,7 @@ class Trainer:
         self.dataset_fraction = dataset_fraction
         self.val_dataloader = val_dataloader
         self.checkpoint_frequency = checkpoint_frequency
+        self.checkpoint_frequency_batch = checkpoint_frequency_batch
         self.lr_scheduler = lr_scheduler
         self.device = device
         self.model_dir = model_dir if model_dir else os.path.join('temp', 'checkpoints')
@@ -189,11 +191,10 @@ class Trainer:
 
             if self.lr_scheduler: self.lr_scheduler.step()
 
-            if self.checkpoint_frequency and epoch % self.checkpoint_frequency == 0:
-                self._save_checkpoint(epoch)
+            self._save_checkpoint(epoch=epoch)
 
         if not self.checkpoint_frequency or self.epochs % self.checkpoint_frequency != 0:
-            self._save_checkpoint(self.epochs)
+            self._save_checkpoint(epoch=self.epochs)
 
         self.timer.end("train")
 
@@ -233,6 +234,10 @@ class Trainer:
 
             if regularization is not None: regularization = regularization.item()
             running_loss.append(loss.item())
+
+            if (i + 1) % self.checkpoint_frequency_batch == 0:
+                if np.min(running_loss[:-1]) > running_loss[-1]:
+                    self._save_checkpoint('batch_savepoint_%model_name%.pt')
 
             # Grab one parameter to monitor
             # param = list(self.model.history_model.parameters())[0]
@@ -329,12 +334,11 @@ class Trainer:
     def plot_loss(self, specimen='train'):
         pass
 
-    def _save_checkpoint(self, epoch, running_loss=None):
-        if isinstance(epoch, int): epoch = f"{epoch:03d}"
-        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        loss = running_loss or (self.get_loss('train')[-1] if self.has_loss('train') else None)
-        model_path = f"checkpoint_{self.model_name}_{epoch}_{date_str}_{loss}.pt"
-        model_path = os.path.join(self.model_dir, model_path)
+    def _save_checkpoint(self, name="checkpoint_%model_name%_%epoch%_%date%_%loss%.pt", **kwargs):
+        for key, value in kwargs.items(): name = name.replace(f"%{key}%", str(value))
+        if "%model_name%" in name: name = name.replace("%model_name%", self.model_name)
+        if "%date%" in name: name = name.replace("%date%", datetime.now().strftime("%Y%m%d_%H%M%S"))
+        model_path = os.path.join(self.model_dir, name)
         torch.save(self.model.state_dict(), model_path)
 
     def save_model(self, name=None):
