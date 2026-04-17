@@ -34,16 +34,17 @@ def _ada_pad(item: np.ndarray, length):
 
 def sequence_collate(batch: list[tuple[tuple[Any], tuple[Any]]], collate=default_collate):
     model_data, loss_data = zip(*batch)
-    print([x.shape for x in model_data[0]])
+    # print([x.shape for x in model_data[0]])
     first_seq_idx = [idx for idx, data in enumerate(model_data[0]) if data.ndim > 0 and len(data) != 1][0]
     max_len = max(len(sample[first_seq_idx]) for sample in model_data)
+    lens = collate(np.asarray([len(sample[first_seq_idx]) for sample in model_data]))
     mask = collate(np.asarray([[i < len(sample[first_seq_idx]) for i in range(max_len)] for sample in model_data]))
     model_data = tuple(zip(*(tuple(_ada_pad(data, max_len) for data in sample) for sample in model_data)))
     model_data = tuple(collate(np.stack(data)) for data in model_data)
-    print([x.shape for x in model_data])
+    # print([x.shape for x in model_data])
     loss_data = tuple(zip(*(tuple(data for data in sample) for sample in loss_data)))
     loss_data = tuple(collate(np.stack(data)) for data in loss_data)
-    return (*model_data, mask), loss_data
+    return (*model_data, mask, lens), loss_data
 
 
 def create_sequence_collator(collation_map, collate=default_collate):
@@ -58,13 +59,14 @@ def create_sequence_collator(collation_map, collate=default_collate):
 
         max_len = max(len(data) for sample in seq_data for data in sample)
         mask = collate(np.asarray([[i < len(sample[0]) for i in range(max_len)] for sample in seq_data]))
+        lens = collate(np.asarray([len(sample[0]) for sample in seq_data]))
         seq_data = tuple(zip(*(tuple(_ada_pad(data, max_len) for data in sample) for sample in seq_data)))
         seq_data = tuple(collate(np.stack(data)) for data in seq_data)
 
         loss_data = tuple(zip(*(tuple(data for data in sample) for sample in loss_data)))
         loss_data = tuple(collate(np.stack(data)) for data in loss_data)
 
-        return (*non_seq_data, *seq_data, mask), loss_data
+        return (*non_seq_data, *seq_data, mask, lens), loss_data
 
     return sequence_collate
 
