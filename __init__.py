@@ -1,2 +1,2 @@
-from .trainer import *
 from .bench import *
+from .trainer import *
