@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
@@ -331,12 +332,29 @@ class Trainer:
 
         print("    ".join(messages))
 
+    def _running_average(self, data):
+        data = np.asarray(data, dtype=float)
+        kernel = np.ones(len(data))
+        cumsum = np.convolve(data, kernel, mode='full')[:len(data)]
+        counts = np.arange(1, len(data) + 1)
+        return cumsum / counts
+
     def plot_loss_collage(self):
         # TODO: Plot Train and Val loss
         pass
 
-    def plot_loss(self, specimen='train'):
-        pass
+    def plot_loss(self, specimen=None):
+        if specimen is None:
+            specimen = 'train.batch' if 'train.batch' in self.loss else 'train'
+        _, axs = plt.subplots(1, 2, figsize=(12, 4))
+        for ax, frac in zip(axs.ravel(), [0.0, 0.5]):
+            data = self.loss[specimen] if isinstance(specimen, str) else specimen
+            data = data[int(frac * len(data)):]
+            ax.plot(data)
+            ax.plot(self._running_average(data))
+        if isinstance(specimen, str): plt.suptitle(f"Loss ({specimen})")
+        else: plt.suptitle(f"Loss")
+        plt.tight_layout(), plt.plot()
 
     def _save_checkpoint(self, name="checkpoint_%model_name%_%epoch%_%date%_%loss%.pt", **kwargs):
         for key, value in kwargs.items(): name = name.replace(f"%{key}%", str(value))
