@@ -265,7 +265,7 @@ class Trainer:
                 epoch_data = epoch - 1 if self.dataset_length is None else epoch - 1 + i / self.dataset_length
                 # if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
                 # else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
-                agg_loss = np.mean(running_loss[-100:]) if len(running_loss) > 100 else None
+                agg_loss = np.mean(running_loss[-20:]) if len(running_loss) > 20 else None
                 self._log_step(epoch_data, train_loss=running_loss[-1], agg_loss=agg_loss, tts=self.timer.since("train"), dataset_fraction=i, regularization=regularization)
 
             self.timer.start("train_dataloader")
@@ -343,12 +343,13 @@ class Trainer:
         # TODO: Plot Train and Val loss
         pass
 
-    def plot_loss(self, specimen=None):
+    def plot_loss(self, specimen=None, windows=3, skip=0):
         if specimen is None:
             specimen = 'train.batch' if 'train.batch' in self.loss else 'train'
-        _, axs = plt.subplots(1, 2, figsize=(12, 4))
-        for ax, frac in zip(axs.ravel(), [0.0, 0.5]):
+        _, axs = plt.subplots(1, windows, figsize=(12, 4))
+        for ax, frac in zip(axs.ravel(), np.linspace(0, 1, windows + 1)[:-1]):
             data = self.loss[specimen] if isinstance(specimen, str) else specimen
+            data = data[skip:]
             data = data[int(frac * len(data)):]
             ax.plot(data)
             ax.plot(self._running_average(data))
