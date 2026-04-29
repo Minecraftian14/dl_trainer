@@ -82,6 +82,12 @@ def default_model_criteria_step(criterion, preds, truth):
     return criterion(preds, truth)
 
 
+def default_train_step_callback(trainer, local_variables): pass
+
+
+def default_display_metrics(trainer, local_variables) -> list[tuple[str, float]]: return []
+
+
 class Trainer:
     def __init__(
             self,
@@ -123,6 +129,9 @@ class Trainer:
             record_per_batch_training_loss=False,
 
             loss=None,
+
+            train_step_callback=default_train_step_callback,
+            display_metrics=default_display_metrics,
     ):
         self.model = model
         self.train_dataloader = train_dataloader
@@ -146,6 +155,10 @@ class Trainer:
         self.record_per_batch_training_loss = record_per_batch_training_loss
 
         self.loss = loss or {}
+
+        self.train_step_callback = train_step_callback
+        self.display_metrics = display_metrics
+
         self.model.to(self.device)
 
         self.timer = TypedTimer(self.model_name)
@@ -224,6 +237,9 @@ class Trainer:
                 loss += regularization
             loss.backward()
 
+            self.train_step_callback(self, locals())
+            display_metrics = self.display_metrics(self, locals())
+
             # TODO: Add scope for adding callbacks around everything to do things like gradient clipping
             # torch.nn.utils.clip_grad_norm_(self.model.alpha.parameters(), max_norm=1.0)
 
@@ -250,6 +266,8 @@ class Trainer:
 
             if self.record_per_batch_training_loss:
                 self.record_loss('train.batch', running_loss[-1])
+                for name, value in display_metrics:
+                    self.record_loss(f'train.{name}', value)
 
             self.timer.end("batch")
 
@@ -265,8 +283,8 @@ class Trainer:
                 epoch_data = epoch - 1 if self.dataset_length is None else epoch - 1 + i / self.dataset_length
                 # if self.dataset_length is None: self._log_step(epoch - 1, running_loss[-1], tts=self.timer.since("train"))
                 # else: self._log_step(epoch - 1 + i / self.dataset_length, running_loss[-1], tts=self.timer.since("train"))
-                agg_loss = np.mean(running_loss[-20:]) if len(running_loss) > 20 else None
-                self._log_step(epoch_data, train_loss=running_loss[-1], agg_loss=agg_loss, tts=self.timer.since("train"), dataset_fraction=i, regularization=regularization)
+                agg_loss = np.mean(running_loss[-50:]) if len(running_loss) > 50 else None
+                self._log_step(epoch_data, train_loss=running_loss[-1], agg_loss=agg_loss, tts=self.timer.since("train"), dataset_fraction=i, regularization=regularization, display_metrics=display_metrics)
 
             self.timer.start("train_dataloader")
             i += 1
@@ -297,7 +315,7 @@ class Trainer:
         self.record_loss('val', epoch_loss)
         self.timer.end("_validate_step")
 
-    def _log_step(self, epoch=None, train_loss=None, agg_loss=None, val_loss=None, tts=None, dataset_fraction=None, regularization=None):
+    def _log_step(self, epoch=None, train_loss=None, agg_loss=None, val_loss=None, tts=None, dataset_fraction=None, regularization=None, display_metrics=None, **kwargs):
         messages = []
 
         if dataset_fraction is not None and self.dataset_fraction is not None:
@@ -329,6 +347,14 @@ class Trainer:
             if epoch is not None and isinstance(epoch, float):
                 tpe = tts / epoch
                 messages.append(f"ETA: {(self.epochs - epoch) * tpe:.2f}")
+
+        for name, value in display_metrics:
+            messages.append(f"{name}: {value:.4f}")
+
+        for arg in kwargs:
+            if arg.startswith("score_"):
+                name, value = kwargs[arg]
+                messages.append(f"{name}: {value:.4f}")
 
         print("    ".join(messages))
 
